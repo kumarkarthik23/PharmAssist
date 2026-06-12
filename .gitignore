@@ -1,0 +1,31 @@
+# Virtual environment
+venv/
+env/
+.env
+
+# Database (contains real data, don't commit)
+pharmacy.db
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Streamlit
+.streamlit/
+
+# Temp files
+temp_*
+*.tmp
+test_prescription.png
+
+# Logs
+*.log
