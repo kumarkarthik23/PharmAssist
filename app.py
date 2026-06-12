@@ -5,7 +5,9 @@ from db_utils import (
     init_db, get_all_drugs, check_availability,
     deduct_stock, get_sales_log,
     get_expiring_drugs, get_expired_drugs,
-    get_low_stock_drugs, get_out_of_stock_drugs
+    get_low_stock_drugs, get_out_of_stock_drugs,
+    get_sales_summary, get_top_selling_drugs,
+    get_sales_by_date, get_sales_by_drug
 )
 from rag_agent import extract_prescription
 
@@ -19,15 +21,13 @@ for key in ["medicines", "checked", "sale_messages"]:
         st.session_state[key] = None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ALERTS BANNER — Expiry + Stock warnings at the very top
+# ALERTS BANNER
 # ══════════════════════════════════════════════════════════════════════════════
-expired       = get_expired_drugs()
-expiring_30   = get_expiring_drugs(30)
-expiring_90   = get_expiring_drugs(90)
-out_of_stock  = get_out_of_stock_drugs()
-low_stock     = get_low_stock_drugs(20)
-
-# Filter low stock to exclude out-of-stock (shown separately)
+expired      = get_expired_drugs()
+expiring_30  = get_expiring_drugs(30)
+expiring_90  = get_expiring_drugs(90)
+out_of_stock = get_out_of_stock_drugs()
+low_stock    = get_low_stock_drugs(20)
 low_stock_only = [d for d in low_stock if d["quantity"] > 0]
 
 has_alerts = expired or expiring_30 or out_of_stock or low_stock_only
@@ -35,7 +35,6 @@ has_alerts = expired or expiring_30 or out_of_stock or low_stock_only
 if has_alerts:
     st.header("🚨 Alerts")
     col1, col2 = st.columns(2)
-
     with col1:
         if expired:
             with st.expander(f"🔴 {len(expired)} drug(s) EXPIRED", expanded=True):
@@ -51,7 +50,6 @@ if has_alerts:
                       "Stock": d["quantity"], "Expiry Date": d["expiry_date"]} for d in expiring_30],
                     use_container_width=True, hide_index=True
                 )
-
     with col2:
         if out_of_stock:
             with st.expander(f"⛔ {len(out_of_stock)} drug(s) OUT OF STOCK", expanded=True):
@@ -67,7 +65,6 @@ if has_alerts:
                       "Stock": d["quantity"], "Expiry Date": d["expiry_date"]} for d in low_stock_only],
                     use_container_width=True, hide_index=True
                 )
-
     st.divider()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -108,10 +105,8 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
     col1, col2 = st.columns([1, 2])
-
     with col1:
         st.image(Image.open(uploaded_file), caption="Uploaded Prescription", use_container_width=True)
-
     with col2:
         if st.button("🔍 Extract Prescription Details", type="primary"):
             with st.spinner("Analysing prescription with Gemini Vision..."):
@@ -190,11 +185,11 @@ if st.session_state.medicines is not None:
                             warnings.append(f"⚠️ Expires in {days_left}d")
                         elif days_left <= 90:
                             warnings.append(f"🟡 Expires in {days_left}d")
-                    remaining_after_sale = drug["quantity"] - qty
-                    if remaining_after_sale == 0:
-                        warnings.append("⛔ Will be out of stock after this sale")
-                    elif remaining_after_sale <= 20:
-                        warnings.append(f"🟡 Only {remaining_after_sale} units left after sale")
+                    remaining = drug["quantity"] - qty
+                    if remaining == 0:
+                        warnings.append("⛔ Will be out of stock after sale")
+                    elif remaining <= 20:
+                        warnings.append(f"🟡 Only {remaining} units left after sale")
                     status = "✅ In stock"
                     if warnings:
                         status += " — " + ", ".join(warnings)
@@ -228,11 +223,9 @@ if st.session_state.checked:
 # ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.checked:
     sellable = [m for m in st.session_state.checked if m["sufficient"]]
-
     if sellable:
         st.header("💳 Step 4: Select Drugs to Sell")
         st.caption("Only drugs with sufficient stock are shown. Uncheck any you don't want to sell.")
-
         selected = []
         for i, m in enumerate(sellable):
             drug  = m["drug"]
@@ -241,11 +234,9 @@ if st.session_state.checked:
                      f"{m['required_quantity']} units × ${drug['price_per_unit']:.2f} = **${total:.2f}**")
             if st.checkbox(label, key=f"sell_{i}", value=True):
                 selected.append(m)
-
         if selected:
             grand_total = sum(m["drug"]["price_per_unit"] * m["required_quantity"] for m in selected)
             st.info(f"🛒 {len(selected)} drug(s) selected — Grand Total: **${grand_total:.2f}**")
-
             if st.button("✅ Confirm Sale", type="primary"):
                 messages = []
                 for m in selected:
@@ -269,7 +260,68 @@ if st.session_state.sale_messages:
             st.error(msg)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 5 — Live Inventory
+# SECTION 5 — Sales Analytics
+# ══════════════════════════════════════════════════════════════════════════════
+st.header("📊 Sales Analytics")
+
+summary = get_sales_summary()
+
+if summary["total_transactions"] == 0:
+    st.info("No sales recorded yet. Process a sale to see analytics.")
+else:
+    # ── KPI cards ─────────────────────────────────────────────────────────────
+    k1, k2, k3 = st.columns(3)
+    k1.metric("💰 Total Revenue",      f"${summary['total_revenue']:.2f}")
+    k2.metric("📦 Total Units Sold",    summary["total_units_sold"])
+    k3.metric("🧾 Total Transactions",  summary["total_transactions"])
+
+    st.divider()
+
+    col_left, col_right = st.columns(2)
+
+    # ── Revenue over time ──────────────────────────────────────────────────────
+    with col_left:
+        st.subheader("📈 Revenue Over Time")
+        daily = get_sales_by_date()
+        if daily:
+            chart_data = {"Date": [d["date"] for d in daily],
+                          "Revenue ($)": [d["revenue"] for d in daily]}
+            st.line_chart(chart_data, x="Date", y="Revenue ($)", use_container_width=True)
+        else:
+            st.info("Not enough data yet.")
+
+    # ── Top selling drugs ──────────────────────────────────────────────────────
+    with col_right:
+        st.subheader("🏆 Top Selling Drugs")
+        top = get_top_selling_drugs(5)
+        if top:
+            chart_data = {"Drug": [d["name"] for d in top],
+                          "Units Sold": [d["units_sold"] for d in top]}
+            st.bar_chart(chart_data, x="Drug", y="Units Sold", use_container_width=True)
+        else:
+            st.info("Not enough data yet.")
+
+    st.divider()
+
+    # ── Full breakdown table ───────────────────────────────────────────────────
+    st.subheader("📋 Sales Breakdown by Drug")
+    breakdown = get_sales_by_drug()
+    if breakdown:
+        st.dataframe(
+            breakdown,
+            column_config={
+                "name":         st.column_config.TextColumn("Drug",         width="medium"),
+                "brand":        st.column_config.TextColumn("Brand",        width="medium"),
+                "units_sold":   st.column_config.NumberColumn("Units Sold", width="small"),
+                "revenue":      st.column_config.NumberColumn("Revenue ($)", width="medium", format="$%.2f"),
+                "transactions": st.column_config.NumberColumn("Transactions", width="small"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 6 — Live Inventory
 # ══════════════════════════════════════════════════════════════════════════════
 st.header("🏪 Live Inventory")
 
@@ -292,7 +344,7 @@ else:
     st.info("No drugs in inventory.")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — Sales Log
+# SECTION 7 — Sales Log
 # ══════════════════════════════════════════════════════════════════════════════
 st.header("🧾 Sales Log")
 

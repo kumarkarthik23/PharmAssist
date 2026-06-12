@@ -173,3 +173,78 @@ def get_out_of_stock_drugs() -> list[dict]:
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_sales_summary() -> dict:
+    """Returns total revenue, total units sold, and total transactions."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            COUNT(*)                                        AS total_transactions,
+            SUM(s.quantity_sold)                            AS total_units_sold,
+            SUM(s.quantity_sold * d.price_per_unit)         AS total_revenue
+        FROM sales s
+        JOIN drugs d ON s.drug_id = d.id
+    """)
+    row = cur.fetchone()
+    conn.close()
+    return {
+        "total_transactions": row[0] or 0,
+        "total_units_sold":   row[1] or 0,
+        "total_revenue":      round(row[2] or 0, 2),
+    }
+
+def get_top_selling_drugs(limit: int = 5) -> list[dict]:
+    """Returns top selling drugs by units sold."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT d.name, d.brand,
+               SUM(s.quantity_sold)                    AS units_sold,
+               SUM(s.quantity_sold * d.price_per_unit) AS revenue
+        FROM sales s
+        JOIN drugs d ON s.drug_id = d.id
+        GROUP BY s.drug_id
+        ORDER BY units_sold DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return [{"name": r[0], "brand": r[1], "units_sold": r[2], "revenue": round(r[3], 2)} for r in rows]
+
+def get_sales_by_date() -> list[dict]:
+    """Returns daily sales totals — units sold and revenue per day."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT s.sale_date,
+               SUM(s.quantity_sold)                    AS units_sold,
+               SUM(s.quantity_sold * d.price_per_unit) AS revenue
+        FROM sales s
+        JOIN drugs d ON s.drug_id = d.id
+        GROUP BY s.sale_date
+        ORDER BY s.sale_date ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return [{"date": r[0], "units_sold": r[1], "revenue": round(r[2], 2)} for r in rows]
+
+def get_sales_by_drug() -> list[dict]:
+    """Returns all-time units sold and revenue broken down per drug."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT d.name, d.brand,
+               SUM(s.quantity_sold)                    AS units_sold,
+               SUM(s.quantity_sold * d.price_per_unit) AS revenue,
+               COUNT(*)                                AS transactions
+        FROM sales s
+        JOIN drugs d ON s.drug_id = d.id
+        GROUP BY s.drug_id
+        ORDER BY revenue DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return [{"name": r[0], "brand": r[1], "units_sold": r[2],
+             "revenue": round(r[3], 2), "transactions": r[4]} for r in rows]
