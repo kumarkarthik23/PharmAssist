@@ -248,3 +248,31 @@ def get_sales_by_drug() -> list[dict]:
     conn.close()
     return [{"name": r[0], "brand": r[1], "units_sold": r[2],
              "revenue": round(r[3], 2), "transactions": r[4]} for r in rows]
+
+
+def restock_drug(drug_id: int, quantity_added: int) -> bool:
+    """Adds quantity_added units to the drug's current stock. Returns True on success."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE drugs SET quantity = quantity + ? WHERE id = ?",
+        (quantity_added, drug_id)
+    )
+    updated = cur.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+def add_new_drug(name: str, brand: str, quantity: int,
+                 expiry_date: str, price_per_unit: float) -> bool:
+    """Adds a brand new drug to the inventory. Returns True on success."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO drugs (name, brand, quantity, expiry_date, price_per_unit)
+           VALUES (?, ?, ?, ?, ?)""",
+        (name, brand, quantity, expiry_date, price_per_unit)
+    )
+    conn.commit()
+    conn.close()
+    return True

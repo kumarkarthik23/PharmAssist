@@ -7,7 +7,8 @@ from db_utils import (
     get_expiring_drugs, get_expired_drugs,
     get_low_stock_drugs, get_out_of_stock_drugs,
     get_sales_summary, get_top_selling_drugs,
-    get_sales_by_date, get_sales_by_drug
+    get_sales_by_date, get_sales_by_drug,
+    restock_drug, add_new_drug
 )
 from rag_agent import extract_prescription
 
@@ -23,14 +24,13 @@ for key in ["medicines", "checked", "sale_messages"]:
 # ══════════════════════════════════════════════════════════════════════════════
 # ALERTS BANNER
 # ══════════════════════════════════════════════════════════════════════════════
-expired      = get_expired_drugs()
-expiring_30  = get_expiring_drugs(30)
-expiring_90  = get_expiring_drugs(90)
-out_of_stock = get_out_of_stock_drugs()
-low_stock    = get_low_stock_drugs(20)
+expired        = get_expired_drugs()
+expiring_30    = get_expiring_drugs(30)
+expiring_90    = get_expiring_drugs(90)
+out_of_stock   = get_out_of_stock_drugs()
+low_stock      = get_low_stock_drugs(20)
 low_stock_only = [d for d in low_stock if d["quantity"] > 0]
-
-has_alerts = expired or expiring_30 or out_of_stock or low_stock_only
+has_alerts     = expired or expiring_30 or out_of_stock or low_stock_only
 
 if has_alerts:
     st.header("🚨 Alerts")
@@ -79,9 +79,7 @@ with st.sidebar:
         st.info(f"🟡 {len(expiring_31_90)} expiring in 31–90 days")
     if not expired and not expiring_90:
         st.success("✅ All drugs within expiry")
-
     st.divider()
-
     st.markdown("### 📦 Stock Watch")
     if out_of_stock:
         st.error(f"⛔ {len(out_of_stock)} out of stock")
@@ -89,7 +87,6 @@ with st.sidebar:
         st.warning(f"🟡 {len(low_stock_only)} running low (≤20 units)")
     if not out_of_stock and not low_stock_only:
         st.success("✅ All drugs adequately stocked")
-
     st.divider()
     st.caption(f"Today: {date.today().strftime('%d %b %Y')}")
 
@@ -127,7 +124,6 @@ if st.session_state.medicines is not None:
     st.caption("Gemini's best read of the prescription is shown below. Correct any mistakes before checking stock.")
 
     medicines = st.session_state.medicines
-
     col_add, col_remove = st.columns([1, 1])
     with col_add:
         if st.button("➕ Add a drug row"):
@@ -174,7 +170,7 @@ if st.session_state.medicines is not None:
                     drug = result["drug"]
                     checked.append({**m, "status": f"⚠️ Low stock ({drug['quantity']} available)", "found": True, "sufficient": False, "drug": drug})
                 else:
-                    drug = result["drug"]
+                    drug     = result["drug"]
                     expiry   = drug.get("expiry_date")
                     warnings = []
                     if expiry:
@@ -265,63 +261,133 @@ if st.session_state.sale_messages:
 st.header("📊 Sales Analytics")
 
 summary = get_sales_summary()
-
 if summary["total_transactions"] == 0:
     st.info("No sales recorded yet. Process a sale to see analytics.")
 else:
-    # ── KPI cards ─────────────────────────────────────────────────────────────
     k1, k2, k3 = st.columns(3)
-    k1.metric("💰 Total Revenue",      f"${summary['total_revenue']:.2f}")
-    k2.metric("📦 Total Units Sold",    summary["total_units_sold"])
-    k3.metric("🧾 Total Transactions",  summary["total_transactions"])
-
+    k1.metric("💰 Total Revenue",     f"${summary['total_revenue']:.2f}")
+    k2.metric("📦 Total Units Sold",   summary["total_units_sold"])
+    k3.metric("🧾 Total Transactions", summary["total_transactions"])
     st.divider()
 
     col_left, col_right = st.columns(2)
-
-    # ── Revenue over time ──────────────────────────────────────────────────────
     with col_left:
         st.subheader("📈 Revenue Over Time")
         daily = get_sales_by_date()
         if daily:
-            chart_data = {"Date": [d["date"] for d in daily],
-                          "Revenue ($)": [d["revenue"] for d in daily]}
-            st.line_chart(chart_data, x="Date", y="Revenue ($)", use_container_width=True)
-        else:
-            st.info("Not enough data yet.")
-
-    # ── Top selling drugs ──────────────────────────────────────────────────────
+            st.line_chart(
+                {"Date": [d["date"] for d in daily], "Revenue ($)": [d["revenue"] for d in daily]},
+                x="Date", y="Revenue ($)", use_container_width=True
+            )
     with col_right:
         st.subheader("🏆 Top Selling Drugs")
         top = get_top_selling_drugs(5)
         if top:
-            chart_data = {"Drug": [d["name"] for d in top],
-                          "Units Sold": [d["units_sold"] for d in top]}
-            st.bar_chart(chart_data, x="Drug", y="Units Sold", use_container_width=True)
-        else:
-            st.info("Not enough data yet.")
-
+            st.bar_chart(
+                {"Drug": [d["name"] for d in top], "Units Sold": [d["units_sold"] for d in top]},
+                x="Drug", y="Units Sold", use_container_width=True
+            )
     st.divider()
-
-    # ── Full breakdown table ───────────────────────────────────────────────────
     st.subheader("📋 Sales Breakdown by Drug")
     breakdown = get_sales_by_drug()
     if breakdown:
         st.dataframe(
             breakdown,
             column_config={
-                "name":         st.column_config.TextColumn("Drug",         width="medium"),
-                "brand":        st.column_config.TextColumn("Brand",        width="medium"),
-                "units_sold":   st.column_config.NumberColumn("Units Sold", width="small"),
+                "name":         st.column_config.TextColumn("Drug",          width="medium"),
+                "brand":        st.column_config.TextColumn("Brand",         width="medium"),
+                "units_sold":   st.column_config.NumberColumn("Units Sold",  width="small"),
                 "revenue":      st.column_config.NumberColumn("Revenue ($)", width="medium", format="$%.2f"),
-                "transactions": st.column_config.NumberColumn("Transactions", width="small"),
+                "transactions": st.column_config.NumberColumn("Transactions",width="small"),
             },
-            use_container_width=True,
-            hide_index=True,
+            use_container_width=True, hide_index=True,
         )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — Live Inventory
+# SECTION 6 — Restock
+# ══════════════════════════════════════════════════════════════════════════════
+st.header("🔄 Restock Inventory")
+
+tab_restock, tab_add = st.tabs(["📦 Restock Existing Drug", "➕ Add New Drug"])
+
+# ── Tab 1: Restock existing ───────────────────────────────────────────────────
+with tab_restock:
+    st.caption("Select a drug and enter the quantity to add to its current stock.")
+    drugs = get_all_drugs()
+
+    if drugs:
+        drug_options = {f"{d['name']} ({d['brand']}) — {d['quantity']} units": d for d in drugs}
+        selected_label = st.selectbox("Select drug to restock", list(drug_options.keys()), key="restock_select")
+        selected_drug  = drug_options[selected_label]
+
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            restock_qty = st.number_input(
+                "Quantity to add", min_value=1, max_value=10000, value=50, key="restock_qty"
+            )
+        with col2:
+            new_expiry = st.date_input(
+                "Update expiry date (optional — leave as is to keep current)",
+                value=datetime.strptime(selected_drug["expiry_date"], "%Y-%m-%d").date()
+                      if selected_drug.get("expiry_date") else date.today(),
+                key="restock_expiry"
+            )
+
+        st.info(f"Current stock: **{selected_drug['quantity']}** → After restock: **{selected_drug['quantity'] + restock_qty}**")
+
+        if st.button("✅ Confirm Restock", type="primary", key="btn_restock"):
+            success = restock_drug(selected_drug["id"], restock_qty)
+            # Update expiry date if changed
+            if success and str(new_expiry) != selected_drug.get("expiry_date"):
+                from db_utils import get_connection
+                conn = get_connection()
+                conn.execute("UPDATE drugs SET expiry_date = ? WHERE id = ?",
+                             (str(new_expiry), selected_drug["id"]))
+                conn.commit()
+                conn.close()
+            if success:
+                st.success(f"✅ Added {restock_qty} units to {selected_drug['name']}. New stock: {selected_drug['quantity'] + restock_qty}")
+                st.rerun()
+            else:
+                st.error("❌ Restock failed — please try again.")
+    else:
+        st.info("No drugs in inventory yet.")
+
+# ── Tab 2: Add new drug ───────────────────────────────────────────────────────
+with tab_add:
+    st.caption("Add a completely new drug to the inventory.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        new_name   = st.text_input("Drug Name (generic)",  key="new_name")
+        new_brand  = st.text_input("Brand Name",           key="new_brand")
+        new_qty    = st.number_input("Initial Stock",      min_value=0, max_value=100000, value=100, key="new_qty")
+    with c2:
+        new_price  = st.number_input("Price per Unit ($)", min_value=0.0, max_value=10000.0,
+                                     value=1.0, step=0.05, format="%.2f", key="new_price")
+        new_expiry = st.date_input("Expiry Date",          value=date(2027, 12, 31), key="new_expiry")
+
+    if st.button("➕ Add Drug to Inventory", type="primary", key="btn_add_drug"):
+        if not new_name.strip():
+            st.warning("Drug name cannot be empty.")
+        elif not new_brand.strip():
+            st.warning("Brand name cannot be empty.")
+        else:
+            success = add_new_drug(
+                name=new_name.strip(),
+                brand=new_brand.strip(),
+                quantity=new_qty,
+                expiry_date=str(new_expiry),
+                price_per_unit=new_price
+            )
+            if success:
+                st.success(f"✅ {new_name} ({new_brand}) added to inventory with {new_qty} units.")
+                st.rerun()
+            else:
+                st.error("❌ Failed to add drug — please try again.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 7 — Live Inventory
 # ══════════════════════════════════════════════════════════════════════════════
 st.header("🏪 Live Inventory")
 
@@ -337,14 +403,13 @@ if drugs:
             "expiry_date":    st.column_config.TextColumn("Expiry Date",      width="medium"),
             "price_per_unit": st.column_config.NumberColumn("Price/Unit ($)", width="medium", format="$%.2f"),
         },
-        use_container_width=True,
-        hide_index=True,
+        use_container_width=True, hide_index=True,
     )
 else:
     st.info("No drugs in inventory.")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 7 — Sales Log
+# SECTION 8 — Sales Log
 # ══════════════════════════════════════════════════════════════════════════════
 st.header("🧾 Sales Log")
 
@@ -359,8 +424,7 @@ if sales:
             "quantity_sold": st.column_config.NumberColumn("Qty Sold", width="small"),
             "sale_date":     st.column_config.TextColumn("Date",       width="medium"),
         },
-        use_container_width=True,
-        hide_index=True,
+        use_container_width=True, hide_index=True,
     )
 else:
     st.info("No sales recorded yet.")
