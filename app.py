@@ -4,7 +4,8 @@ from PIL import Image
 from db_utils import (
     init_db, get_all_drugs, check_availability,
     deduct_stock, get_sales_log,
-    get_expiring_drugs, get_expired_drugs
+    get_expiring_drugs, get_expired_drugs,
+    get_low_stock_drugs, get_out_of_stock_drugs
 )
 from rag_agent import extract_prescription
 
@@ -18,45 +19,79 @@ for key in ["medicines", "checked", "sale_messages"]:
         st.session_state[key] = None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ALERTS BANNER — Expiry warnings at the very top
+# ALERTS BANNER — Expiry + Stock warnings at the very top
 # ══════════════════════════════════════════════════════════════════════════════
-expired      = get_expired_drugs()
-expiring_30  = get_expiring_drugs(30)
-expiring_90  = get_expiring_drugs(90)
+expired       = get_expired_drugs()
+expiring_30   = get_expiring_drugs(30)
+expiring_90   = get_expiring_drugs(90)
+out_of_stock  = get_out_of_stock_drugs()
+low_stock     = get_low_stock_drugs(20)
 
-# Only show banner if there's something to warn about
-if expired or expiring_30:
+# Filter low stock to exclude out-of-stock (shown separately)
+low_stock_only = [d for d in low_stock if d["quantity"] > 0]
+
+has_alerts = expired or expiring_30 or out_of_stock or low_stock_only
+
+if has_alerts:
     st.header("🚨 Alerts")
+    col1, col2 = st.columns(2)
 
-    if expired:
-        with st.expander(f"🔴 {len(expired)} drug(s) EXPIRED — click to view", expanded=True):
-            rows = [{"Drug": d["name"], "Brand": d["brand"],
-                     "Stock": d["quantity"], "Expired On": d["expiry_date"]} for d in expired]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+    with col1:
+        if expired:
+            with st.expander(f"🔴 {len(expired)} drug(s) EXPIRED", expanded=True):
+                st.dataframe(
+                    [{"Drug": d["name"], "Brand": d["brand"],
+                      "Stock": d["quantity"], "Expired On": d["expiry_date"]} for d in expired],
+                    use_container_width=True, hide_index=True
+                )
+        if expiring_30:
+            with st.expander(f"🟠 {len(expiring_30)} drug(s) expiring within 30 days", expanded=True):
+                st.dataframe(
+                    [{"Drug": d["name"], "Brand": d["brand"],
+                      "Stock": d["quantity"], "Expiry Date": d["expiry_date"]} for d in expiring_30],
+                    use_container_width=True, hide_index=True
+                )
 
-    if expiring_30:
-        with st.expander(f"🟠 {len(expiring_30)} drug(s) expiring within 30 days", expanded=True):
-            rows = [{"Drug": d["name"], "Brand": d["brand"],
-                     "Stock": d["quantity"], "Expiry Date": d["expiry_date"]} for d in expiring_30]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+    with col2:
+        if out_of_stock:
+            with st.expander(f"⛔ {len(out_of_stock)} drug(s) OUT OF STOCK", expanded=True):
+                st.dataframe(
+                    [{"Drug": d["name"], "Brand": d["brand"],
+                      "Expiry Date": d["expiry_date"]} for d in out_of_stock],
+                    use_container_width=True, hide_index=True
+                )
+        if low_stock_only:
+            with st.expander(f"🟡 {len(low_stock_only)} drug(s) running low (≤20 units)", expanded=True):
+                st.dataframe(
+                    [{"Drug": d["name"], "Brand": d["brand"],
+                      "Stock": d["quantity"], "Expiry Date": d["expiry_date"]} for d in low_stock_only],
+                    use_container_width=True, hide_index=True
+                )
 
     st.divider()
 
-# Subtle 90-day notice in sidebar
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 📅 Expiry Watch")
     if expired:
         st.error(f"🔴 {len(expired)} expired")
     if expiring_30:
         st.warning(f"🟠 {len(expiring_30)} expiring in 30 days")
-
-    # Drugs expiring in 31-90 days (exclude the 30-day ones)
     expiring_31_90 = [d for d in expiring_90 if d not in expiring_30]
     if expiring_31_90:
         st.info(f"🟡 {len(expiring_31_90)} expiring in 31–90 days")
-
     if not expired and not expiring_90:
         st.success("✅ All drugs within expiry")
+
+    st.divider()
+
+    st.markdown("### 📦 Stock Watch")
+    if out_of_stock:
+        st.error(f"⛔ {len(out_of_stock)} out of stock")
+    if low_stock_only:
+        st.warning(f"🟡 {len(low_stock_only)} running low (≤20 units)")
+    if not out_of_stock and not low_stock_only:
+        st.success("✅ All drugs adequately stocked")
 
     st.divider()
     st.caption(f"Today: {date.today().strftime('%d %b %Y')}")
@@ -145,18 +180,25 @@ if st.session_state.medicines is not None:
                     checked.append({**m, "status": f"⚠️ Low stock ({drug['quantity']} available)", "found": True, "sufficient": False, "drug": drug})
                 else:
                     drug = result["drug"]
-                    # Warn if the drug is expiring soon even though stock is sufficient
-                    expiry = drug.get("expiry_date")
-                    warning = ""
+                    expiry   = drug.get("expiry_date")
+                    warnings = []
                     if expiry:
                         days_left = (datetime.strptime(expiry, "%Y-%m-%d").date() - date.today()).days
                         if days_left < 0:
-                            warning = " ⚠️ EXPIRED"
+                            warnings.append("⚠️ EXPIRED")
                         elif days_left <= 30:
-                            warning = f" ⚠️ Expires in {days_left}d"
+                            warnings.append(f"⚠️ Expires in {days_left}d")
                         elif days_left <= 90:
-                            warning = f" 🟡 Expires in {days_left}d"
-                    checked.append({**m, "status": f"✅ In stock{warning}", "found": True, "sufficient": True, "drug": drug})
+                            warnings.append(f"🟡 Expires in {days_left}d")
+                    remaining_after_sale = drug["quantity"] - qty
+                    if remaining_after_sale == 0:
+                        warnings.append("⛔ Will be out of stock after this sale")
+                    elif remaining_after_sale <= 20:
+                        warnings.append(f"🟡 Only {remaining_after_sale} units left after sale")
+                    status = "✅ In stock"
+                    if warnings:
+                        status += " — " + ", ".join(warnings)
+                    checked.append({**m, "status": status, "found": True, "sufficient": True, "drug": drug})
             st.session_state.checked       = checked
             st.session_state.sale_messages = None
 
@@ -167,9 +209,9 @@ if st.session_state.checked:
     st.header("🔎 Step 3: Availability Results")
     rows = []
     for m in st.session_state.checked:
-        stock = m["drug"]["quantity"] if m["drug"] else "—"
-        price = (f"${m['drug']['price_per_unit'] * m['required_quantity']:.2f}"
-                 if m["drug"] and m.get("required_quantity") else "—")
+        stock  = m["drug"]["quantity"] if m["drug"] else "—"
+        price  = (f"${m['drug']['price_per_unit'] * m['required_quantity']:.2f}"
+                  if m["drug"] and m.get("required_quantity") else "—")
         expiry = m["drug"]["expiry_date"] if m["drug"] else "—"
         rows.append({
             "Drug Name":    m.get("drug_name") or "—",

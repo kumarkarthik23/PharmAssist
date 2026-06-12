@@ -144,3 +144,32 @@ def get_expired_drugs() -> list[dict]:
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_low_stock_drugs(threshold: int = 20) -> list[dict]:
+    """Returns drugs with stock at or below the threshold, sorted by quantity ascending."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, brand, quantity, expiry_date, price_per_unit
+        FROM drugs
+        WHERE quantity <= ?
+        ORDER BY quantity ASC
+    """, (threshold,))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_out_of_stock_drugs() -> list[dict]:
+    """Returns drugs with zero stock."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, brand, quantity, expiry_date, price_per_unit
+        FROM drugs
+        WHERE quantity = 0
+        ORDER BY name ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
