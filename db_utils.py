@@ -112,3 +112,35 @@ def get_sales_log():
     conn.close()
     return [dict(r) for r in rows]
 
+
+
+def get_expiring_drugs(days_threshold: int = 90) -> list[dict]:
+    """Returns drugs expiring within the next `days_threshold` days, sorted soonest first."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, brand, quantity, expiry_date, price_per_unit
+        FROM drugs
+        WHERE expiry_date IS NOT NULL
+          AND date(expiry_date) <= date('now', ? || ' days')
+          AND date(expiry_date) >= date('now')
+        ORDER BY date(expiry_date) ASC
+    """, (f"+{days_threshold}",))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_expired_drugs() -> list[dict]:
+    """Returns drugs that have already passed their expiry date."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, brand, quantity, expiry_date, price_per_unit
+        FROM drugs
+        WHERE expiry_date IS NOT NULL
+          AND date(expiry_date) < date('now')
+        ORDER BY date(expiry_date) ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

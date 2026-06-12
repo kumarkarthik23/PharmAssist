@@ -1,6 +1,11 @@
 import streamlit as st
+from datetime import date, datetime
 from PIL import Image
-from db_utils import init_db, get_all_drugs, check_availability, deduct_stock, get_sales_log
+from db_utils import (
+    init_db, get_all_drugs, check_availability,
+    deduct_stock, get_sales_log,
+    get_expiring_drugs, get_expired_drugs
+)
 from rag_agent import extract_prescription
 
 init_db()
@@ -11,6 +16,50 @@ st.title("💊 PharmAssist — Prescription & Inventory Manager")
 for key in ["medicines", "checked", "sale_messages"]:
     if key not in st.session_state:
         st.session_state[key] = None
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALERTS BANNER — Expiry warnings at the very top
+# ══════════════════════════════════════════════════════════════════════════════
+expired      = get_expired_drugs()
+expiring_30  = get_expiring_drugs(30)
+expiring_90  = get_expiring_drugs(90)
+
+# Only show banner if there's something to warn about
+if expired or expiring_30:
+    st.header("🚨 Alerts")
+
+    if expired:
+        with st.expander(f"🔴 {len(expired)} drug(s) EXPIRED — click to view", expanded=True):
+            rows = [{"Drug": d["name"], "Brand": d["brand"],
+                     "Stock": d["quantity"], "Expired On": d["expiry_date"]} for d in expired]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    if expiring_30:
+        with st.expander(f"🟠 {len(expiring_30)} drug(s) expiring within 30 days", expanded=True):
+            rows = [{"Drug": d["name"], "Brand": d["brand"],
+                     "Stock": d["quantity"], "Expiry Date": d["expiry_date"]} for d in expiring_30]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+# Subtle 90-day notice in sidebar
+with st.sidebar:
+    st.markdown("### 📅 Expiry Watch")
+    if expired:
+        st.error(f"🔴 {len(expired)} expired")
+    if expiring_30:
+        st.warning(f"🟠 {len(expiring_30)} expiring in 30 days")
+
+    # Drugs expiring in 31-90 days (exclude the 30-day ones)
+    expiring_31_90 = [d for d in expiring_90 if d not in expiring_30]
+    if expiring_31_90:
+        st.info(f"🟡 {len(expiring_31_90)} expiring in 31–90 days")
+
+    if not expired and not expiring_90:
+        st.success("✅ All drugs within expiry")
+
+    st.divider()
+    st.caption(f"Today: {date.today().strftime('%d %b %Y')}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — Upload & Extract
@@ -34,8 +83,8 @@ if uploaded_file:
                 try:
                     uploaded_file.seek(0)
                     medicines = extract_prescription(uploaded_file)
-                    st.session_state.medicines  = medicines
-                    st.session_state.checked    = None
+                    st.session_state.medicines     = medicines
+                    st.session_state.checked       = None
                     st.session_state.sale_messages = None
                 except Exception as e:
                     st.error(f"Extraction failed: {e}")
@@ -49,7 +98,6 @@ if st.session_state.medicines is not None:
 
     medicines = st.session_state.medicines
 
-    # Add / remove drug rows
     col_add, col_remove = st.columns([1, 1])
     with col_add:
         if st.button("➕ Add a drug row"):
@@ -63,7 +111,6 @@ if st.session_state.medicines is not None:
                 st.session_state.medicines = medicines
                 st.rerun()
 
-    # Editable fields per drug
     updated = []
     for i, med in enumerate(medicines):
         st.markdown(f"**Drug {i+1}**")
@@ -82,15 +129,14 @@ if st.session_state.medicines is not None:
         updated.append({"drug_name": name, "frequency": freq, "duration": dur, "required_quantity": qty})
 
     if st.button("✅ Confirm & Check Stock Availability", type="primary"):
-        # Validate — no empty drug names
         empty = [i+1 for i, m in enumerate(updated) if not m["drug_name"].strip()]
         if empty:
             st.warning(f"Drug name is empty for row(s): {empty}. Please fill in all names.")
         else:
             checked = []
             for m in updated:
-                name = m["drug_name"].strip()
-                qty  = m["required_quantity"]
+                name   = m["drug_name"].strip()
+                qty    = m["required_quantity"]
                 result = check_availability(name, qty)
                 if not result["found"]:
                     checked.append({**m, "status": "❌ Not in inventory", "found": False, "sufficient": False, "drug": None})
@@ -99,8 +145,19 @@ if st.session_state.medicines is not None:
                     checked.append({**m, "status": f"⚠️ Low stock ({drug['quantity']} available)", "found": True, "sufficient": False, "drug": drug})
                 else:
                     drug = result["drug"]
-                    checked.append({**m, "status": "✅ In stock", "found": True, "sufficient": True, "drug": drug})
-            st.session_state.checked = checked
+                    # Warn if the drug is expiring soon even though stock is sufficient
+                    expiry = drug.get("expiry_date")
+                    warning = ""
+                    if expiry:
+                        days_left = (datetime.strptime(expiry, "%Y-%m-%d").date() - date.today()).days
+                        if days_left < 0:
+                            warning = " ⚠️ EXPIRED"
+                        elif days_left <= 30:
+                            warning = f" ⚠️ Expires in {days_left}d"
+                        elif days_left <= 90:
+                            warning = f" 🟡 Expires in {days_left}d"
+                    checked.append({**m, "status": f"✅ In stock{warning}", "found": True, "sufficient": True, "drug": drug})
+            st.session_state.checked       = checked
             st.session_state.sale_messages = None
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -108,18 +165,19 @@ if st.session_state.medicines is not None:
 # ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.checked:
     st.header("🔎 Step 3: Availability Results")
-
     rows = []
     for m in st.session_state.checked:
         stock = m["drug"]["quantity"] if m["drug"] else "—"
         price = (f"${m['drug']['price_per_unit'] * m['required_quantity']:.2f}"
                  if m["drug"] and m.get("required_quantity") else "—")
+        expiry = m["drug"]["expiry_date"] if m["drug"] else "—"
         rows.append({
-            "Drug Name":     m.get("drug_name") or "—",
-            "Required Qty":  str(m.get("required_quantity") or "—"),
-            "In Stock":      str(stock),
-            "Total Price":   price,
-            "Status":        m["status"],
+            "Drug Name":    m.get("drug_name") or "—",
+            "Required Qty": str(m.get("required_quantity") or "—"),
+            "In Stock":     str(stock),
+            "Expiry Date":  expiry,
+            "Total Price":  price,
+            "Status":       m["status"],
         })
     st.table(rows)
 
@@ -155,12 +213,11 @@ if st.session_state.checked:
                     else:
                         messages.append(("error", f"❌ Failed: {m['drug']['name']} — stock may have changed"))
                 st.session_state.sale_messages = messages
-                st.session_state.medicines = None
-                st.session_state.checked   = None
+                st.session_state.medicines     = None
+                st.session_state.checked       = None
     else:
         st.warning("⚠️ No drugs with sufficient stock available for sale.")
 
-# ── Sale results ──────────────────────────────────────────────────────────────
 if st.session_state.sale_messages:
     st.header("🧾 Sale Results")
     for kind, msg in st.session_state.sale_messages:
@@ -213,4 +270,3 @@ if sales:
     )
 else:
     st.info("No sales recorded yet.")
-
